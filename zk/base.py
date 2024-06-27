@@ -76,16 +76,41 @@ class ZK_helper(object):
 
         :return: bool
         """
-        import subprocess, platform
+        import subprocess, platform, re, time
         # Ping parameters as function of OS
-        ping_str = "-n 1" if  platform.system().lower()=="windows" else "-c 1 -W 5"
-        args = "ping " + " " + ping_str + " " + self.ip
-        need_sh = False if  platform.system().lower()=="windows" else True
-        # Ping
-        return subprocess.call(args,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            shell=need_sh) == 0
+        args = ["ping", "-n", "5", self.ip] if platform.system().lower() == "windows" else ["ping", "-c", "5", "-W", "5", self.ip]
+        need_sh = False if platform.system().lower() == "windows" else True
+        time_init = time.time()
+        # Execute the ping command
+        try:
+            result = subprocess.run(args, capture_output=True,
+                text=True, shell=need_sh)
+
+            output = result.stdout
+            print(output)
+
+            if result.returncode != 0:
+                return False
+
+            # Parse the output to find latency and packet loss
+            if platform.system().lower() == "windows":
+                latency = re.findall(r'Average = (\d+)ms', output)
+                packet_loss = re.findall(r'(\d+)% loss', output)
+            else:
+                latency = re.findall(r'time=(\d+\.\d+) ms', output)
+                packet_loss = re.findall(r'(\d+)% packet loss', output)
+
+            latency = float(latency[0]) if latency else float('inf')
+            packet_loss = int(packet_loss[0]) if packet_loss else 100
+            print(f'Latency: {latency}, Packet loss: {packet_loss}')
+
+            # Determine if latency and packet loss are acceptable
+            return not (latency > 100 or packet_loss > 20)
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            return False
+        finally:
+            print(f'Time ping: {time.time()-time_init}')
 
     def test_tcp(self):
         """
