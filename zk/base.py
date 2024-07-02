@@ -62,13 +62,14 @@ class ZK_helper(object):
     ZK helper class
     """
 
-    def __init__(self, ip, port=4370):
+    def __init__(self, ip, port=4370, size_packages_ping=1):
         """
         Construct a new 'ZK_helper' object.
         """
         self.address = (ip, port)
         self.ip = ip
         self.port = port
+        self.size_packages_ping = size_packages_ping
 
     def test_ping(self):
         """
@@ -78,7 +79,7 @@ class ZK_helper(object):
         """
         import subprocess, platform, re, time
         # Ping parameters as function of OS
-        args = ["ping", "-n", "5", self.ip] if platform.system().lower() == "windows" else ["ping", "-c", "5", "-W", "5", self.ip]
+        args = ["ping", "-n", self.size_packages_ping, self.ip] if platform.system().lower() == "windows" else ["ping", "-c", self.size_packages_ping, "-W", "5", self.ip]
         need_sh = False if platform.system().lower() == "windows" else True
         time_init = time.time()
         # Execute the ping command
@@ -105,7 +106,7 @@ class ZK_helper(object):
             print(f'Latency: {latency}, Packet loss: {packet_loss}')
 
             # Determine if latency and packet loss are acceptable
-            return not (latency > 100 or packet_loss > 20)
+            return not (latency > 1000 or packet_loss > 0)
         except Exception as e:
             print(f"An error occurred: {e}")
             return False
