@@ -69,7 +69,7 @@ class ZK_helper(object):
         self.address = (ip, port)
         self.ip = ip
         self.port = port
-        self.size_packages_ping = size_packages_ping
+        self.size_packages_ping = str(size_packages_ping)
 
     def test_ping(self):
         """
@@ -84,29 +84,26 @@ class ZK_helper(object):
         time_init = time.time()
         # Execute the ping command
         try:
-            result = subprocess.run(args, capture_output=True,
-                text=True, shell=need_sh)
+            with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW, text=True) as process:
+                output, error = process.communicate()
 
-            output = result.stdout
-            print(output)
+                if process.returncode != 0:
+                    return False
 
-            if result.returncode != 0:
-                return False
+                # Parse the output to find latency and packet loss
+                if platform.system().lower() == "windows":
+                    latency = re.findall(r'Average = (\d+)ms', output)
+                    packet_loss = re.findall(r'(\d+)% loss', output)
+                else:
+                    latency = re.findall(r'time=(\d+\.\d+) ms', output)
+                    packet_loss = re.findall(r'(\d+)% packet loss', output)
 
-            # Parse the output to find latency and packet loss
-            if platform.system().lower() == "windows":
-                latency = re.findall(r'Average = (\d+)ms', output)
-                packet_loss = re.findall(r'(\d+)% loss', output)
-            else:
-                latency = re.findall(r'time=(\d+\.\d+) ms', output)
-                packet_loss = re.findall(r'(\d+)% packet loss', output)
+                latency = float(latency[0]) if latency else float('inf')
+                packet_loss = int(packet_loss[0]) if packet_loss else 100
+                print(f'Latency: {latency}, Packet loss: {packet_loss}')
 
-            latency = float(latency[0]) if latency else float('inf')
-            packet_loss = int(packet_loss[0]) if packet_loss else 100
-            print(f'Latency: {latency}, Packet loss: {packet_loss}')
-
-            # Determine if latency and packet loss are acceptable
-            return not (latency > 1000 or packet_loss > 0)
+                # Determine if latency and packet loss are acceptable
+                return not (latency > 1000 or packet_loss > 0)
         except Exception as e:
             print(f"An error occurred: {e}")
             return False
