@@ -77,7 +77,7 @@ class ZK_helper(object):
 
         :return: bool
         """
-        import subprocess, platform, re, time
+        import subprocess, platform, time
         # Ping parameters as function of OS
         args = ["ping", "-n", self.size_packages_ping, self.ip] if platform.system().lower() == "windows" else ["ping", "-c", self.size_packages_ping, "-W", "5", self.ip]
         need_sh = False if platform.system().lower() == "windows" else True
@@ -87,20 +87,19 @@ class ZK_helper(object):
             with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW, text=True) as process:
                 output, error = process.communicate()
 
+                print(f'output: {output}')
+                print(f'output: {error}')
+                print(f'output: {process}')
+
                 if process.returncode != 0:
                     return False
 
-                # Parse the output to find latency and packet loss
-                if platform.system().lower() == "windows":
-                    latency = re.findall(r'Average = (\d+)ms', output)
-                    packet_loss = re.findall(r'(\d+)% loss', output)
-                else:
-                    latency = re.findall(r'time=(\d+\.\d+) ms', output)
-                    packet_loss = re.findall(r'(\d+)% packet loss', output)
+                latency, packet_loss = self.parse_output(output)
 
                 latency = float(latency[0]) if latency else float('inf')
                 packet_loss = int(packet_loss[0]) if packet_loss else 100
                 print(f'Latency: {latency}, Packet loss: {packet_loss}')
+                print(not (latency > 1000 or packet_loss > 0))
 
                 # Determine if latency and packet loss are acceptable
                 return not (latency > 1000 or packet_loss > 0)
@@ -109,6 +108,25 @@ class ZK_helper(object):
             return False
         finally:
             print(f'Time ping: {time.time()-time_init}')
+
+    # Obtener el idioma del sistema
+    def get_system_language(self):
+        import locale
+        lang, _ = locale.getdefaultlocale()
+        return lang
+
+    # Función para procesar el output
+    def parse_output(self, output):
+        import platform, re
+        lang = self.get_system_language()
+        if platform.system().lower() == "windows":
+            if lang.startswith('es'):
+                latency = re.findall(r'Promedio = (\d+)ms', output)
+                packet_loss = re.findall(r'(\d+)% pérdida', output)
+            else:  # Inglés por defecto
+                latency = re.findall(r'Average = (\d+)ms', output)
+                packet_loss = re.findall(r'(\d+)% loss', output)
+        return latency, packet_loss
 
     def test_tcp(self):
         """
