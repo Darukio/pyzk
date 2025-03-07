@@ -77,7 +77,7 @@ class ZK_helper(object):
 
         :return: bool
         """
-        import subprocess, platform, time
+        import subprocess, platform, time, logging
         # Ping parameters as function of OS
         args = ["ping", "-n", self.size_packages_ping, self.ip] if platform.system().lower() == "windows" else ["ping", "-c", self.size_packages_ping, "-W", "5", self.ip]
         need_sh = False if platform.system().lower() == "windows" else True
@@ -87,27 +87,28 @@ class ZK_helper(object):
             with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW, text=True) as process:
                 output, error = process.communicate()
 
-                print(f'output: {output}')
-                print(f'output: {error}')
-                print(f'output: {process}')
+                logging.debug(f'output: {output}')
+                logging.debug(f'output: {error}')
+                logging.debug(f'output: {process}')
 
                 if process.returncode != 0:
                     return False
 
                 latency, packet_loss = self.parse_output(output)
+                logging.debug(f'Latency: {latency}, Packet loss: {packet_loss}')
 
                 latency = float(latency[0]) if latency else float('inf')
                 packet_loss = int(packet_loss[0]) if packet_loss else 100
-                print(f'Latency: {latency}, Packet loss: {packet_loss}')
-                print(not (latency > 1000 or packet_loss > 0))
+                logging.debug(f'Latency: {latency}, Packet loss: {packet_loss}')
+                logging.debug(not (latency > 1000 or packet_loss > 0))
 
                 # Determine if latency and packet loss are acceptable
                 return not (latency > 1000 or packet_loss > 0)
         except Exception as e:
-            print(f"An error occurred: {e}")
+            logging.error(f"An error occurred: {e}")
             return False
         finally:
-            print(f'Time ping: {time.time()-time_init}')
+            logging.debug(f'Time ping: {time.time()-time_init}')
 
     # Obtener el idioma del sistema
     def get_system_language(self):
@@ -121,8 +122,8 @@ class ZK_helper(object):
         lang = self.get_system_language()
         if platform.system().lower() == "windows":
             if lang.startswith('es'):
-                latency = re.findall(r'Promedio = (\d+)ms', output)
-                packet_loss = re.findall(r'(\d+)% pérdida', output)
+                latency = re.findall(r'Media = (\d+)ms', output)
+                packet_loss = re.findall(r'(\d+)% perdidos', output)
             else:  # Inglés por defecto
                 latency = re.findall(r'Average = (\d+)ms', output)
                 packet_loss = re.findall(r'(\d+)% loss', output)
@@ -208,13 +209,23 @@ class ZK(object):
         return self.is_connect
 
     def __create_socket(self):
-        if self.tcp:
-            self.__sock = socket(AF_INET, SOCK_STREAM)
-            self.__sock.settimeout(self.__timeout)
-            self.__sock.connect_ex(self.__address)
-        else:
-            self.__sock = socket(AF_INET, SOCK_DGRAM)
-            self.__sock.settimeout(self.__timeout)
+        import logging
+        try:
+            if self.tcp:
+                self.__sock = socket(AF_INET, SOCK_STREAM)
+                self.__sock.settimeout(self.__timeout)
+                result = self.__sock.connect_ex(self.__address)
+                if result != 0:
+                    raise ZKErrorConnection(f"TCP connection error: code {result}")
+            else:
+                self.__sock = socket(AF_INET, SOCK_DGRAM)
+                # Configure socket buffers to avoid WinError 10040/10057
+                # self.__sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+                # self.__sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+                self.__sock.settimeout(self.__timeout)
+        except Exception as e:
+            logging.error("Error creating socket: %s", e)
+            raise ZKNetworkError(f"Error in __create_socket: {e}")
 
     def __create_tcp_top(self, packet):
         """
@@ -277,41 +288,52 @@ class ZK(object):
 
     def __send_command(self, command, command_string=b'', response_size=8):
         """
-        send command to the terminal
+        Sends a command to the terminal and handles network-related errors.
         """
         if command not in [const.CMD_CONNECT, const.CMD_AUTH] and not self.is_connect:
-            raise ZKErrorConnection("instance are not connected.")
-
+            raise ZKErrorConnection("Instance is not connected.")
         buf = self.__create_header(command, command_string, self.__session_id, self.__reply_id)
+        import logging
         try:
             if self.tcp:
                 top = self.__create_tcp_top(buf)
                 self.__sock.send(top)
-                self.__tcp_data_recv = self.__sock.recv(response_size + 8)
-                self.__tcp_length = self.__test_tcp_top(self.__tcp_data_recv)
+                data_recv = self.__sock.recv(response_size + 8)
+                self.__tcp_length = self.__test_tcp_top(data_recv)
                 if self.__tcp_length == 0:
                     raise ZKNetworkError("TCP packet invalid")
-                self.__header = unpack('<4H', self.__tcp_data_recv[8:16])
-                self.__data_recv = self.__tcp_data_recv[8:]
+                self.__header = unpack('<4H', data_recv[8:16])
+                self.__data_recv = data_recv[8:]
             else:
-                self.__sock.sendto(buf, self.__address)
-                self.__data_recv = self.__sock.recv(response_size)
+                # For UDP, use sendto and recv; capture specific errors
+                try:
+                    self.__sock.sendto(buf, self.__address)
+                except Exception as send_err:
+                    if hasattr(send_err, 'errno') and send_err.errno in (10040, 10057):
+                        raise ZKNetworkError(f"UDP send error: {send_err}")
+                    raise
+                try:
+                    self.__data_recv, _ = self.__sock.recvfrom(response_size)
+                except timeout as te:
+                    raise ZKNetworkError("timed out")
+                except Exception as recv_err:
+                    if hasattr(recv_err, 'errno') and recv_err.errno in (10040, 10057):
+                        raise ZKNetworkError(f"UDP receive error: {recv_err}")
+                    raise
                 self.__header = unpack('<4H', self.__data_recv[:8])
+        except timeout as te:
+            logging.error("Timeout in __send_command: %s", te)
+            raise ZKNetworkError("timed out")
         except Exception as e:
+            logging.error("Error in __send_command: %s", e)
             raise ZKNetworkError(str(e))
-
+        
         self.__response = self.__header[0]
         self.__reply_id = self.__header[3]
         self.__data = self.__data_recv[8:]
         if self.__response in [const.CMD_ACK_OK, const.CMD_PREPARE_DATA, const.CMD_DATA]:
-            return {
-                'status': True,
-                'code': self.__response
-            }
-        return {
-            'status': False,
-            'code': self.__response
-        }
+            return {'status': True, 'code': self.__response}
+        return {'status': False, 'code': self.__response}
 
     def __ack_ok(self):
         """
@@ -1706,13 +1728,17 @@ class ZK(object):
 
     def clear_attendance(self):
         """
-        clear all attendance record
-
-        :return: bool
+        Clears all attendance records.
+        Captures and handles the error if the response is not successful.
         """
+        import logging
         command = const.CMD_CLEAR_ATTLOG
-        cmd_response = self.__send_command(command)
+        try:
+            cmd_response = self.__send_command(command)
+        except ZKNetworkError as e:
+            logging.error("Error sending clear_attendance command: %s", e)
+            raise ZKErrorResponse("Can't clear attendances")
         if cmd_response.get('status'):
             return True
         else:
-            raise ZKErrorResponse("Can't clear response")
+            raise ZKErrorResponse("Can't clear attendances")
